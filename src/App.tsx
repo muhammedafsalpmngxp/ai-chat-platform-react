@@ -1,11 +1,16 @@
-import { ArrowUp, KeyRound, PanelLeftOpen, Square, SquarePen } from "lucide-react";
+import { KeyRound, PanelLeftOpen, SquarePen, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AttachmentChip } from "@/components/AttachmentChip";
+import { Composer } from "@/components/Composer";
 import { Markdown } from "@/components/Markdown";
 import { ModelPicker } from "@/components/ModelPicker";
 import { SettingsModal } from "@/components/SettingsModal";
 import { Sidebar } from "@/components/Sidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { useAttachments } from "@/hooks/useAttachments";
+import { formatBytes, UPLOAD_LIMITS } from "@/lib/attachment-limits";
+import { toWireMessages } from "@/lib/attachments";
 import { PROVIDERS, type ChatSettings } from "@/lib/providers";
 import {
   loadConversations,
@@ -19,13 +24,6 @@ import {
 
 const NO_MESSAGES: ChatMessage[] = [];
 
-const SUGGESTIONS = [
-  { title: "Explain a concept", prompt: "Explain how LangGraph state graphs work, with a small example." },
-  { title: "Write some code", prompt: "Write a TypeScript function that debounces another function." },
-  { title: "Brainstorm ideas", prompt: "Give me 5 creative names for a productivity app." },
-  { title: "Summarize text", prompt: "Summarize the key ideas of clean architecture in a few bullet points." },
-];
-
 export default function App() {
   // Chats and settings are read from localStorage on first render.
   const [settings, setSettings] = useState<ChatSettings>(loadSettings);
@@ -35,6 +33,9 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const uploads = useAttachments();
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -97,9 +98,15 @@ export default function App() {
 
   const send = async (text: string) => {
     const content = text.trim();
-    if (!content || streaming) return;
+    const files = uploads.attachments.map(({ loading: _loading, ...a }) => a);
+    if ((!content && !files.length) || streaming || uploads.loading) return;
 
-    const userMsg: ChatMessage = { id: newId(), role: "user", content };
+    const userMsg: ChatMessage = {
+      id: newId(),
+      role: "user",
+      content,
+      ...(files.length && { attachments: files }),
+    };
     const assistantMsg: ChatMessage = { id: newId(), role: "assistant", content: "" };
 
     let convId = activeId;
@@ -107,7 +114,8 @@ export default function App() {
     if (!convId || !active) {
       convId = newId();
       history = [userMsg];
-      const title = content.length > 40 ? content.slice(0, 40) + "…" : content;
+      const label = content || files.map((f) => f.name).join(", ");
+      const title = label.length > 40 ? label.slice(0, 40) + "…" : label;
       setConversations((list) => [
         { id: convId!, title, messages: [userMsg, assistantMsg], updatedAt: Date.now() },
         ...list,
@@ -122,6 +130,7 @@ export default function App() {
       }));
     }
     setInput("");
+    uploads.clear();
     setStreaming(true);
 
     const setAssistant = (patch: Partial<ChatMessage> | ((m: ChatMessage) => Partial<ChatMessage>)) =>
@@ -141,7 +150,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          messages: history.map(({ role, content }) => ({ role, content })),
+          messages: toWireMessages(history),
           provider: settings.provider,
           model: settings.model,
           apiKey: settings.apiKey,
@@ -215,7 +224,28 @@ export default function App() {
         connected={connected}
       />
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main
+        className="relative flex min-w-0 flex-1 flex-col"
+        onDragEnter={(e) => {
+          if (!e.dataTransfer.types.includes("Files")) return;
+          dragDepth.current += 1;
+          setDragging(true);
+        }}
+        onDragLeave={() => {
+          dragDepth.current = Math.max(0, dragDepth.current - 1);
+          if (dragDepth.current === 0) setDragging(false);
+        }}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          if (!e.dataTransfer.files.length) return;
+          e.preventDefault();
+          dragDepth.current = 0;
+          setDragging(false);
+          uploads.addFiles(Array.from(e.dataTransfer.files));
+        }}
+      >
         {/* Header */}
         <header className="flex h-14 shrink-0 items-center gap-1 px-3">
           {/* Open-sidebar / new-chat buttons slide in as the sidebar slides out. */}
@@ -266,27 +296,24 @@ export default function App() {
                   <KeyRound size={16} /> Connect your API key in Settings to start chatting
                 </button>
               )}
-              <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
-                {SUGGESTIONS.map((s) => (
-                  <button
-                    key={s.title}
-                    onClick={() => send(s.prompt)}
-                    className="rounded-xl border border-[var(--border)] px-4 py-3 text-left text-sm hover:bg-[var(--hover)]"
-                  >
-                    <div className="font-medium">{s.title}</div>
-                    <div className="truncate text-[var(--muted)]">{s.prompt}</div>
-                  </button>
-                ))}
-              </div>
             </div>
           ) : (
             <div className="mx-auto max-w-3xl px-4 py-6">
               {messages.map((m) =>
                 m.role === "user" ? (
-                  <div key={m.id} className="mb-6 flex justify-end">
-                    <div className="max-w-[85%] whitespace-pre-wrap rounded-3xl bg-[var(--user-bubble)] px-5 py-2.5">
-                      {m.content}
-                    </div>
+                  <div key={m.id} className="mb-6 flex flex-col items-end gap-2">
+                    {m.attachments && m.attachments.length > 0 && (
+                      <div className="flex max-w-[85%] flex-wrap justify-end gap-2">
+                        {m.attachments.map((a) => (
+                          <AttachmentChip key={a.id} attachment={a} />
+                        ))}
+                      </div>
+                    )}
+                    {m.content && (
+                      <div className="max-w-[85%] whitespace-pre-wrap rounded-3xl bg-[var(--user-bubble)] px-5 py-2.5">
+                        {m.content}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div key={m.id} className="mb-8 flex gap-4">
@@ -309,51 +336,43 @@ export default function App() {
 
         {/* Composer */}
         <div className="shrink-0 px-4 pb-4">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              send(input);
-            }}
-            className="mx-auto flex max-w-3xl items-end gap-2 rounded-3xl border border-[var(--border)] bg-[var(--input)] px-4 py-3 shadow-sm focus-within:border-[var(--muted)]"
+          <Composer
+            value={input}
+            onChange={setInput}
+            onSubmit={() => send(input)}
+            onStop={stop}
+            streaming={streaming}
+            textareaRef={textareaRef}
+            attachments={uploads.attachments}
+            attachmentErrors={uploads.errors}
+            attachmentsLoading={uploads.loading}
+            attachmentsFull={uploads.full}
+            onAddFiles={uploads.addFiles}
+            onRemoveAttachment={uploads.remove}
+          />
+        </div>
+
+        {/* Drag-and-drop overlay */}
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-[var(--bg)]/80 backdrop-blur-sm transition-opacity duration-200 ${
+            dragging ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <div
+            className={`flex flex-col items-center gap-3 rounded-3xl border-2 border-dashed border-[var(--accent)] px-12 py-10 text-center transition-transform duration-200 ${
+              dragging ? "scale-100" : "scale-95"
+            }`}
           >
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  send(input);
-                }
-              }}
-              placeholder="Message Chat AI"
-              aria-label="Message Chat AI"
-              className="max-h-[200px] flex-1 resize-none bg-transparent py-1.5 outline-none placeholder:text-[var(--muted)]"
-            />
-            {streaming ? (
-              <button
-                type="button"
-                onClick={stop}
-                aria-label="Stop generating"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--fg)] text-[var(--bg)]"
-              >
-                <Square size={14} fill="currentColor" />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={!input.trim()}
-                aria-label="Send message"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--fg)] text-[var(--bg)] disabled:opacity-30"
-              >
-                <ArrowUp size={18} />
-              </button>
-            )}
-          </form>
-          <p className="mt-2 text-center text-xs text-[var(--muted)]">
-            Chat AI can make mistakes. Check important info.
-          </p>
+            <Upload size={32} className="text-[var(--accent)]" />
+            <div className="text-lg font-semibold">Drop files to attach</div>
+            <div className="text-sm text-[var(--muted)]">
+              Images up to {formatBytes(UPLOAD_LIMITS.maxImageBytes)}, PDFs up to{" "}
+              {formatBytes(UPLOAD_LIMITS.maxPdfBytes)}, text files up to {formatBytes(UPLOAD_LIMITS.maxTextBytes)}
+              <br />
+              Max {UPLOAD_LIMITS.maxFiles} files per message
+            </div>
+          </div>
         </div>
       </main>
 

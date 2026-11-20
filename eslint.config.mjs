@@ -5,6 +5,14 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+// Allow `{ data: _data, ...rest }` to drop a field.
+const unusedVars = {
+  "@typescript-eslint/no-unused-vars": [
+    "error",
+    { argsIgnorePattern: "^_", varsIgnorePattern: "^_", ignoreRestSiblings: true },
+  ],
+};
+
 export default defineConfig([
   globalIgnores(["dist", "node_modules"]),
   {
@@ -16,10 +24,12 @@ export default defineConfig([
       reactRefresh.configs.vite,
     ],
     languageOptions: { globals: globals.browser },
+    rules: unusedVars,
   },
   {
     files: ["server/**/*.ts", "vite.config.ts"],
     extends: [js.configs.recommended, tseslint.configs.recommended],
     languageOptions: { globals: globals.node },
+    rules: unusedVars,
   },
 ]);

@@ -46,6 +46,23 @@ React UI ──POST /api/chat──▶ Express ──▶ LangGraph StateGraph (S
   - `POST /api/models` lists the models your key can use. The Settings **Test** button calls it, and it costs no tokens.
 - `src/App.tsx` is the chat screen. `src/components/SettingsModal.tsx` is the settings dialog.
 
+## File uploads
+
+Use the paperclip button, drag files onto the chat, or paste images into the message box.
+
+| Limit | Value |
+|---|---|
+| Files per message | 5 |
+| Image (PNG, JPEG, WebP, GIF) | 5 MB each |
+| PDF | 10 MB each |
+| Text or code file (.txt, .md, .csv, .json, .py, .ts, …) | 1 MB each |
+| All files in one message | 20 MB |
+| Attachments resent from chat history per request | 25 MB (older files are dropped first) |
+
+The limits live in `src/lib/attachment-limits.ts`. The browser checks them first so it can show a friendly message, and the server checks them again.
+
+Images and PDFs go to the model as LangChain base64 data blocks, which both ChatAnthropic and ChatOpenAI support. Text files are sent as text. File contents stay in memory only, and only names, sizes and image thumbnails are saved with the chat. After a page reload, earlier files show as names and are no longer sent to the model.
+
 ## API keys
 
 - The key you enter in Settings is stored in **this browser's localStorage** and sent with each request to your own server, which passes it to the provider. It is never saved on the server.

@@ -1,9 +1,11 @@
+import type { Attachment } from "./attachments";
 import { DEFAULT_SETTINGS, type ChatSettings } from "./providers";
 
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  attachments?: Attachment[];
   error?: boolean;
 }
 
@@ -38,7 +40,17 @@ export const loadSettings = (): ChatSettings => ({ ...DEFAULT_SETTINGS, ...read(
 export const saveSettings = (s: ChatSettings) => write(SETTINGS_KEY, s);
 
 export const loadConversations = (): Conversation[] => read<Conversation[]>(CONVERSATIONS_KEY, []);
-export const saveConversations = (c: Conversation[]) => write(CONVERSATIONS_KEY, c);
+/** File contents are too big for localStorage, so only names, sizes and image thumbnails are saved. */
+export const saveConversations = (list: Conversation[]) =>
+  write(
+    CONVERSATIONS_KEY,
+    list.map((c) => ({
+      ...c,
+      messages: c.messages.map((m) =>
+        m.attachments ? { ...m, attachments: m.attachments.map(({ data: _data, ...rest }) => rest) } : m,
+      ),
+    })),
+  );
 
 export const newId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto

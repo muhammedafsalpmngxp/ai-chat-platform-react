@@ -1,10 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { AIMessage, HumanMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import express from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import OpenAI from "openai";
 
+import { UploadError, userMessage, validateAttachments, type IncomingAttachment } from "./attachments";
 import { chatGraph } from "./graph";
 import { describeError, isProvider, resolveApiKey } from "./settings";
 
@@ -16,10 +17,11 @@ try {
 }
 
 const app = express();
-app.use(express.json({ limit: "5mb" }));
+// Room for the attachment budget (base64) plus the text of the chat.
+app.use(express.json({ limit: "40mb" }));
 
 interface ChatRequest {
-  messages: { role: "user" | "assistant"; content: string }[];
+  messages: { role: "user" | "assistant"; content: string; attachments?: IncomingAttachment[] }[];
   provider: unknown;
   model: string;
   apiKey?: string;
@@ -55,8 +57,16 @@ app.post("/api/chat", async (req, res) => {
     return;
   }
 
+  try {
+    validateAttachments(body.messages ?? []);
+  } catch (err) {
+    if (!(err instanceof UploadError)) throw err;
+    res.status(err.status).json({ error: err.message });
+    return;
+  }
+
   const messages = (body.messages ?? []).map((m) =>
-    m.role === "user" ? new HumanMessage(m.content) : new AIMessage(m.content),
+    m.role === "user" ? userMessage(m.content, m.attachments) : new AIMessage(m.content),
   );
 
   // Stop the model call when the browser hits "Stop" or disconnects.
@@ -138,6 +148,16 @@ app.post("/api/models", async (req, res) => {
     const status = (err as { status?: number }).status ?? 500;
     res.status(status).json({ ok: false, error: describeError(err) });
   }
+});
+
+// JSON errors for API requests (e.g. a body over the 40 MB limit) instead of Express's HTML page.
+app.use("/api", (err: { status?: number; type?: string }, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(err);
+  if (err.type === "entity.too.large") {
+    res.status(413).json({ error: "Upload too large. Remove some attachments or start a new chat." });
+    return;
+  }
+  res.status(err.status ?? 500).json({ error: "Bad request." });
 });
 
 // In production, also serve the built React app (`npm run build` -> dist/).
