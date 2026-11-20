@@ -147,7 +147,8 @@ if (existsSync(dist)) {
   app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(dist, "index.html")));
 }
 
-const port = Number(process.env.PORT) || 8787;
+// API_PORT (not PORT) so it never collides with the Vite dev server's port.
+const port = Number(process.env.API_PORT) || 8787;
 app.listen(port, () => {
   console.log(`Chat AI server running at http://localhost:${port}`);
 });

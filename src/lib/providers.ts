@@ -7,6 +7,30 @@ export interface ChatSettings {
   apiKey: string;
   model: string;
   systemPrompt: string;
+  /** Models the key can use, saved after "Test" in Settings (per provider). */
+  fetchedModels?: Partial<Record<Provider, string[]>>;
+}
+
+/** Friendly names for the header model dropdown. Unknown IDs show as-is. */
+export const MODEL_INFO: Record<string, { label: string; description: string }> = {
+  "claude-opus-5-5": { label: "Claude Opus 5.5", description: "Great for most tasks" },
+  "claude-sonnet-5-5": { label: "Claude Sonnet 5.5", description: "Fast and capable for everyday work" },
+  "claude-haiku-5-5": { label: "Claude Haiku 5.5", description: "Fastest, lowest cost" },
+  "claude-fable-5-2": { label: "Claude Fable 5.2", description: "Most capable, for the hardest problems" },
+  "gpt-5.6-luna": { label: "GPT-5.6 Luna", description: "OpenAI" },
+};
+
+export const modelLabel = (id: string) => MODEL_INFO[id]?.label ?? id;
+
+/** Models to offer for the current provider: the curated list plus any fetched by "Test". */
+export function availableModels(settings: ChatSettings): string[] {
+  const curated = PROVIDERS[settings.provider].models;
+  const fetched = settings.fetchedModels?.[settings.provider];
+  if (!fetched?.length) return Array.from(new Set([...curated, settings.model].filter(Boolean)));
+  // Curated models the key can actually use first, then everything else it can use.
+  return Array.from(
+    new Set([...curated.filter((m) => fetched.includes(m)), ...fetched, settings.model].filter(Boolean)),
+  );
 }
 
 export const PROVIDERS: Record<

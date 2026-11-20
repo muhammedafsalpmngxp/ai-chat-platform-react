@@ -2,8 +2,10 @@ import { ArrowUp, KeyRound, PanelLeftOpen, Square, SquarePen } from "lucide-reac
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Markdown } from "@/components/Markdown";
+import { ModelPicker } from "@/components/ModelPicker";
 import { SettingsModal } from "@/components/SettingsModal";
 import { Sidebar } from "@/components/Sidebar";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { PROVIDERS, type ChatSettings } from "@/lib/providers";
 import {
   loadConversations,
@@ -51,13 +53,30 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  // Auto-grow the composer.
-  useEffect(() => {
+  // Auto-grow the composer: on every edit, and whenever its width changes
+  // (first layout, sidebar toggle, window resize) since that changes line wrapping.
+  const fitComposer = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
-  }, [input]);
+  }, []);
+
+  useEffect(fitComposer, [input, fitComposer]);
+
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    let width = 0;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width !== width) {
+        width = entry.contentRect.width;
+        fitComposer();
+      }
+    });
+    observer.observe(ta);
+    return () => observer.disconnect();
+  }, [fitComposer]);
 
   const updateConversation = useCallback((id: string, fn: (c: Conversation) => Conversation) => {
     setConversations((list) => list.map((c) => (c.id === id ? fn(c) : c)));
@@ -164,9 +183,13 @@ export default function App() {
 
   const stop = () => abortRef.current?.abort();
 
-  const saveAndClose = (s: ChatSettings) => {
+  const updateSettings = (s: ChatSettings) => {
     setSettings(s);
     saveSettings(s);
+  };
+
+  const saveAndClose = (s: ChatSettings) => {
+    updateSettings(s);
     setSettingsOpen(false);
   };
 
@@ -195,32 +218,36 @@ export default function App() {
       <main className="flex min-w-0 flex-1 flex-col">
         {/* Header */}
         <header className="flex h-14 shrink-0 items-center gap-1 px-3">
-          {!sidebarOpen && (
-            <>
-              <button
-                onClick={() => setSidebarOpen(true)}
-                aria-label="Open sidebar"
-                className="rounded-lg p-2 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--fg)]"
-              >
-                <PanelLeftOpen size={20} />
-              </button>
-              <button
-                onClick={newChat}
-                aria-label="New chat"
-                className="rounded-lg p-2 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--fg)]"
-              >
-                <SquarePen size={20} />
-              </button>
-            </>
-          )}
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-lg font-semibold hover:bg-[var(--hover)]"
-            title="Change model in Settings"
+          {/* Open-sidebar / new-chat buttons slide in as the sidebar slides out. */}
+          <div
+            inert={sidebarOpen}
+            className={`sidebar-motion flex shrink-0 items-center gap-1 overflow-hidden ${
+              sidebarOpen ? "max-w-0 -translate-x-2 opacity-0" : "max-w-24 translate-x-0 opacity-100"
+            }`}
           >
-            Chat AI
-            <span className="font-mono text-xs font-normal text-[var(--muted)]">{settings.model}</span>
-          </button>
+            <button
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open sidebar"
+              className="rounded-lg p-2 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--fg)]"
+            >
+              <PanelLeftOpen size={20} />
+            </button>
+            <button
+              onClick={newChat}
+              aria-label="New chat"
+              className="rounded-lg p-2 text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--fg)]"
+            >
+              <SquarePen size={20} />
+            </button>
+          </div>
+          <ModelPicker
+            settings={settings}
+            onSelect={(model) => updateSettings({ ...settings, model })}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+          <div className="ml-auto">
+            <ThemeToggle />
+          </div>
         </header>
 
         {/* Messages */}

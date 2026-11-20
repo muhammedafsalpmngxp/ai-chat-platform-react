@@ -1,36 +1,57 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Chat AI
 
-## Getting Started
+A ChatGPT-style chat app: **React (Vite)** front end, with a **LangGraph** agent running in a small **Express** server.
 
-First, run the development server:
+- Streaming replies with Markdown, code blocks with a copy button, and a Stop button
+- Conversation history in the sidebar, grouped by date and saved in the browser
+- **Settings**: pick a provider (Anthropic Claude or OpenAI), connect your API key, test it, pick a model, and edit the system prompt
+- Light and dark themes that follow the OS, plus a mobile layout
+
+## Run it
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:5173, click **Settings** (bottom left), paste your API key, press **Test**, then **Save**.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+`npm run dev` starts both parts:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Part | Port | Code |
+|---|---|---|
+| React UI (Vite) | 5173 | `src/` |
+| LangGraph API (Express) | 8787 | `server/` |
 
-## Learn More
+Vite forwards `/api/*` to the Express server.
 
-To learn more about Next.js, take a look at the following resources:
+### Production
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run build   # type-checks, then builds the UI into dist/
+npm start       # Express serves dist/ and /api on http://localhost:8787
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## How it works
 
-## Deploy on Vercel
+```
+React UI ──POST /api/chat──▶ Express ──▶ LangGraph StateGraph (START → chat → END)
+   ▲                                          │
+   └──────── NDJSON token stream ◀────────────┘   ChatAnthropic / ChatOpenAI
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `server/graph.ts` holds the LangGraph graph. The `chat` node builds the model from the request's settings (provider, key, model, system prompt), passed in through `config.configurable`. To add tools, retrieval, or routing, add nodes and edges here.
+- `server/index.ts` has two routes:
+  - `POST /api/chat` streams the graph's output (`streamMode: "messages"`) as NDJSON.
+  - `POST /api/models` lists the models your key can use. The Settings **Test** button calls it, and it costs no tokens.
+- `src/App.tsx` is the chat screen. `src/components/SettingsModal.tsx` is the settings dialog.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## API keys
+
+- The key you enter in Settings is stored in **this browser's localStorage** and sent with each request to your own server, which passes it to the provider. It is never saved on the server.
+- Optional: put fallback keys in a `.env` file (copy `.env.example`). The server uses them when no key is entered in Settings, which is useful for a shared deployment. Don't expose that kind of deployment publicly without adding auth.
+
+## Models
+
+- Anthropic: `claude-opus-5-5` (default), `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-2`. On Opus 5.5, Sonnet 5.5, and Fable 5.2, server-side refusal fallback (`fallbacks: "default"`) is turned on.
+- OpenAI: press **Test** to load the models your key can use, or type any model ID.

@@ -1,7 +1,13 @@
 import { CheckCircle2, Eye, EyeOff, KeyRound, Loader2, X, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { DEFAULT_SYSTEM_PROMPT, PROVIDERS, type ChatSettings, type Provider } from "@/lib/providers";
+import {
+  availableModels,
+  DEFAULT_SYSTEM_PROMPT,
+  PROVIDERS,
+  type ChatSettings,
+  type Provider,
+} from "@/lib/providers";
 
 // Mounted only while open, so the form starts fresh from `settings` each time.
 interface Props {
@@ -20,7 +26,7 @@ export function SettingsModal({ settings, onClose, onSave }: Props) {
   const [draft, setDraft] = useState(settings);
   const [showKey, setShowKey] = useState(false);
   const [test, setTest] = useState<TestState>({ status: "idle" });
-  const [models, setModels] = useState<string[]>(PROVIDERS[settings.provider].models);
+  const models = availableModels(draft);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -32,7 +38,6 @@ export function SettingsModal({ settings, onClose, onSave }: Props) {
 
   const changeProvider = (provider: Provider) => {
     setDraft((d) => ({ ...d, provider, apiKey: "", model: PROVIDERS[provider].defaultModel }));
-    setModels(PROVIDERS[provider].models);
     setTest({ status: "idle" });
   };
 
@@ -46,9 +51,16 @@ export function SettingsModal({ settings, onClose, onSave }: Props) {
       });
       const data = await res.json();
       if (!data.ok) return setTest({ status: "error", message: data.error });
-      const list: string[] = data.models.length ? data.models : meta.models;
-      setModels(Array.from(new Set([...meta.models.filter((m) => list.includes(m)), ...list])));
-      if (!list.includes(draft.model)) setDraft((d) => ({ ...d, model: list[0] }));
+      const list: string[] = data.models;
+      setDraft((d) => {
+        const fetchedModels = { ...d.fetchedModels, [d.provider]: list };
+        // Keep the current model if the key can use it, else the first curated one it can.
+        const model =
+          !list.length || list.includes(d.model)
+            ? d.model
+            : (meta.models.find((m) => list.includes(m)) ?? list[0]);
+        return { ...d, fetchedModels, model };
+      });
       setTest({ status: "ok", count: data.models.length, usingServerKey: data.usingServerKey });
     } catch {
       setTest({ status: "error", message: "Couldn't reach the server." });
