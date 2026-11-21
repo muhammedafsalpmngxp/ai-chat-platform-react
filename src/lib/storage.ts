@@ -28,11 +28,13 @@ function read<T>(key: string, fallback: T): T {
   }
 }
 
-function write(key: string, value: unknown) {
+/** Returns false if the value couldn't be saved (storage full or blocked). The app still works for this tab. */
+function write(key: string, value: unknown): boolean {
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
+    return true;
   } catch {
-    // Storage full or blocked (private mode) — the app still works for this tab.
+    return false;
   }
 }
 
@@ -40,8 +42,11 @@ export const loadSettings = (): ChatSettings => ({ ...DEFAULT_SETTINGS, ...read(
 export const saveSettings = (s: ChatSettings) => write(SETTINGS_KEY, s);
 
 export const loadConversations = (): Conversation[] => read<Conversation[]>(CONVERSATIONS_KEY, []);
-/** File contents are too big for localStorage, so only names, sizes and image thumbnails are saved. */
-export const saveConversations = (list: Conversation[]) =>
+/**
+ * File contents are too big for localStorage, so only names, sizes and image thumbnails are saved.
+ * Returns false if the chats couldn't be saved.
+ */
+export const saveConversations = (list: Conversation[]): boolean =>
   write(
     CONVERSATIONS_KEY,
     list.map((c) => ({

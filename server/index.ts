@@ -101,8 +101,11 @@ app.post("/api/chat", async (req, res) => {
     for await (const [chunk] of events) {
       const text = chunkText(chunk.content);
       if (text) send({ type: "token", text });
-      const meta = chunk.response_metadata as { stop_reason?: string } | undefined;
-      if (meta?.stop_reason === "refusal") refused = true;
+      // @langchain/anthropic puts the message_delta fields (incl. stop_reason) in additional_kwargs.
+      const stopReason =
+        (chunk.additional_kwargs as { stop_reason?: string } | undefined)?.stop_reason ??
+        (chunk.response_metadata as { stop_reason?: string } | undefined)?.stop_reason;
+      if (stopReason === "refusal") refused = true;
     }
     if (refused) send({ type: "token", text: "\n\n_The model declined to answer this request._" });
     send({ type: "done" });

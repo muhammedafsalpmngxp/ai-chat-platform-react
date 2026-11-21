@@ -1,9 +1,10 @@
 import { Check, Copy } from "lucide-react";
 import { useState, type ComponentProps } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-function CodeBlock({ children, ...props }: ComponentProps<"pre">) {
+// react-markdown passes its syntax-tree `node` to custom components; keep it off the DOM elements.
+function CodeBlock({ children, node: _node, ...props }: ComponentProps<"pre"> & ExtraProps) {
   const [copied, setCopied] = useState(false);
   const child = children as { props?: { className?: string; children?: unknown } };
   const lang = /language-(\w+)/.exec(child?.props?.className ?? "")?.[1] ?? "code";
@@ -42,7 +43,7 @@ export function Markdown({ content }: { content: string }) {
         remarkPlugins={[remarkGfm]}
         components={{
           pre: CodeBlock,
-          a: (props) => <a {...props} target="_blank" rel="noreferrer" />,
+          a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
         }}
       >
         {content}

@@ -1,4 +1,4 @@
-import { KeyRound, PanelLeftOpen, SquarePen, Upload } from "lucide-react";
+import { AlertTriangle, KeyRound, PanelLeftOpen, SquarePen, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AttachmentChip } from "@/components/AttachmentChip";
@@ -37,21 +37,45 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
 
+  const [storageFailed, setStorageFailed] = useState(false);
+
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Follow new tokens only while the user is at (or near) the bottom of the chat.
+  const stickToBottom = useRef(true);
+  const latestConversations = useRef(conversations);
 
+  // Save chats. While a reply streams, wait until tokens pause (or the reply ends)
+  // instead of rewriting all of localStorage on every token.
   useEffect(() => {
-    saveConversations(conversations);
-  }, [conversations]);
+    latestConversations.current = conversations;
+    const timer = window.setTimeout(
+      () => setStorageFailed(!saveConversations(conversations)),
+      streaming ? 1000 : 0,
+    );
+    return () => window.clearTimeout(timer);
+  }, [conversations, streaming]);
+
+  // Don't lose a pending save when the tab is closed mid-reply.
+  useEffect(() => {
+    const flush = () => saveConversations(latestConversations.current);
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, []);
 
   const active = conversations.find((c) => c.id === activeId) ?? null;
   const messages = active?.messages ?? NO_MESSAGES;
 
-  // Keep the view pinned to the bottom while the answer streams in.
+  // Opening a chat starts at its newest message.
+  useEffect(() => {
+    stickToBottom.current = true;
+  }, [activeId]);
+
+  // Keep the view pinned to the bottom while the answer streams in, unless the user scrolled up.
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   // Auto-grow the composer: on every edit, and whenever its width changes
@@ -122,7 +146,10 @@ export default function App() {
       ]);
       setActiveId(convId);
     } else {
-      history = [...active.messages.filter((m) => !m.error), userMsg];
+      // Skip failed replies and empty ones (Stop pressed before the first token):
+      // providers reject empty assistant messages in the history.
+      const usable = active.messages.filter((m) => !m.error && (m.role === "user" || m.content.trim()));
+      history = [...usable, userMsg];
       updateConversation(convId, (c) => ({
         ...c,
         messages: [...c.messages, userMsg, assistantMsg],
@@ -132,6 +159,7 @@ export default function App() {
     setInput("");
     uploads.clear();
     setStreaming(true);
+    stickToBottom.current = true;
 
     const setAssistant = (patch: Partial<ChatMessage> | ((m: ChatMessage) => Partial<ChatMessage>)) =>
       updateConversation(convId!, (c) => ({
@@ -185,6 +213,11 @@ export default function App() {
         setAssistant((m) => ({ content: m.content ? `${m.content}\n\n${message}` : message, error: true }));
       }
     } finally {
+      // Stopped before any text arrived: drop the empty reply instead of leaving a blank turn.
+      updateConversation(convId!, (c) => ({
+        ...c,
+        messages: c.messages.filter((m) => m.id !== assistantMsg.id || m.content || m.error),
+      }));
       setStreaming(false);
       abortRef.current = null;
     }
@@ -281,7 +314,14 @@ export default function App() {
         </header>
 
         {/* Messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          }}
+        >
           {messages.length === 0 ? (
             <div className="mx-auto flex h-full max-w-3xl flex-col items-center justify-center px-4 pb-10">
               <h1 className="mb-2 text-3xl font-semibold">What can I help with?</h1>
@@ -336,6 +376,12 @@ export default function App() {
 
         {/* Composer */}
         <div className="shrink-0 px-4 pb-4">
+          {storageFailed && (
+            <p role="status" className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+              <AlertTriangle size={15} className="shrink-0 text-amber-500" />
+              Chats can't be saved in this browser (storage is full or blocked). Delete old chats to free space.
+            </p>
+          )}
           <Composer
             value={input}
             onChange={setInput}

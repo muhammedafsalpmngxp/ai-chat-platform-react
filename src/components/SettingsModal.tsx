@@ -150,7 +150,7 @@ export function SettingsModal({ settings, onClose, onSave }: Props) {
               {test.status === "ok" && (
                 <p className="flex items-center gap-1.5 text-emerald-500">
                   <CheckCircle2 size={14} />
-                  Connected{test.usingServerKey ? " using the server's key from .env.local" : ""} —{" "}
+                  Connected{test.usingServerKey ? " using the server's key from .env" : ""} —{" "}
                   {test.count} models available.
                 </p>
               )}
