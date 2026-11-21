@@ -86,7 +86,7 @@ export function Sidebar(props: Props) {
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--fg)] text-xs font-bold text-[var(--bg)]">
               AI
             </span>
-            Ask Data
+            Chat AI
           </button>
 
           <nav className="mt-4 flex-1 overflow-y-auto px-3 pb-3">

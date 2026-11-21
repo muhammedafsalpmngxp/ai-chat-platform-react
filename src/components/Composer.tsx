@@ -64,7 +64,7 @@ export function Composer({ value, onChange, onSubmit, onStop, streaming, textare
       </form>
 
       <p className="mt-2 text-center text-xs text-[var(--muted)]">
-        Ask Data can make mistakes. Check important numbers.
+        Chat AI can make mistakes. Check important numbers.
       </p>
     </div>
   );

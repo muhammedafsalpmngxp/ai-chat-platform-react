@@ -33,6 +33,6 @@ if (existsSync(dist)) {
 // API_PORT (not PORT) so it never collides with the Vite dev server's port.
 const port = Number(process.env.API_PORT) || 8787;
 app.listen(port, () => {
-  console.log(`Ask Data server running at http://localhost:${port}`);
+  console.log(`Chat AI server running at http://localhost:${port}`);
   warmUpAskData();
 });

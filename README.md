@@ -1,6 +1,6 @@
-# Ask Data
+# Chat AI
 
-A ChatGPT-style chat for asking questions about your **TWise** data: a **React (Vite)** front end and a small **Express** server that connects to the TWise Ask Data service.
+A ChatGPT-style chat app for asking questions about your **TWise** data: a **React (Vite)** front end and a small **Express** server that connects to the TWise Ask Data service.
 
 - Answers stream in with progress steps, followed by key insights, the result table, the SQL that ran, and follow-up questions you can click
 - Follow-up questions in the same chat keep their context

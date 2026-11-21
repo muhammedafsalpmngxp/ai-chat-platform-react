@@ -291,7 +291,7 @@ export default function App() {
               <SquarePen size={20} />
             </button>
           </div>
-          <span className="px-2 text-lg font-semibold">Ask Data</span>
+          <span className="px-2 text-lg font-semibold">Chat AI</span>
           <div className="ml-auto">
             <ThemeToggle />
           </div>
