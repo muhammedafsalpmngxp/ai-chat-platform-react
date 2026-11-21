@@ -1,43 +1,40 @@
-import { AlertTriangle, KeyRound, PanelLeftOpen, SquarePen, Upload } from "lucide-react";
+import { AlertTriangle, PanelLeftOpen, RotateCw, SquarePen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { AttachmentChip } from "@/components/AttachmentChip";
+import { AskDataDetails as AskDataPanel } from "@/components/AskDataDetails";
 import { Composer } from "@/components/Composer";
 import { Markdown } from "@/components/Markdown";
-import { ModelPicker } from "@/components/ModelPicker";
-import { SettingsModal } from "@/components/SettingsModal";
 import { Sidebar } from "@/components/Sidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { useAttachments } from "@/hooks/useAttachments";
-import { formatBytes, UPLOAD_LIMITS } from "@/lib/attachment-limits";
-import { toWireMessages } from "@/lib/attachments";
-import { PROVIDERS, type ChatSettings } from "@/lib/providers";
 import {
-  loadConversations,
-  loadSettings,
-  newId,
-  saveConversations,
-  saveSettings,
-  type ChatMessage,
-  type Conversation,
-} from "@/lib/storage";
+  fetchAskDataStatus,
+  fetchStarters,
+  type AskDataDetails,
+  type AskDataResult,
+  type AskDataStatus,
+} from "@/lib/askdata";
+import { readNdjson } from "@/lib/stream";
+import { loadConversations, newId, saveConversations, type ChatMessage, type Conversation } from "@/lib/storage";
 
 const NO_MESSAGES: ChatMessage[] = [];
 
+/** The server's Ask Data connection, plus suggested questions when it's connected. */
+async function loadConnection(): Promise<{ status: AskDataStatus; starters: string[] }> {
+  const status = await fetchAskDataStatus();
+  return { status, starters: status.connected ? await fetchStarters() : [] };
+}
+
 export default function App() {
-  // Chats and settings are read from localStorage on first render.
-  const [settings, setSettings] = useState<ChatSettings>(loadSettings);
+  // Chats are read from localStorage on first render.
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const uploads = useAttachments();
-  const [dragging, setDragging] = useState(false);
-  const dragDepth = useRef(0);
-
   const [storageFailed, setStorageFailed] = useState(false);
+  /** The server signs in to Ask Data itself; null while checking. */
+  const [status, setStatus] = useState<AskDataStatus | null>(null);
+  const [starters, setStarters] = useState<string[]>([]);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -45,24 +42,54 @@ export default function App() {
   // Follow new tokens only while the user is at (or near) the bottom of the chat.
   const stickToBottom = useRef(true);
   const latestConversations = useRef(conversations);
+  const savePending = useRef(false);
 
-  // Save chats. While a reply streams, wait until tokens pause (or the reply ends)
+  // Save chats. While an answer streams, wait until it pauses (or ends)
   // instead of rewriting all of localStorage on every token.
   useEffect(() => {
     latestConversations.current = conversations;
+    savePending.current = true;
     const timer = window.setTimeout(
-      () => setStorageFailed(!saveConversations(conversations)),
+      () => {
+        savePending.current = false;
+        setStorageFailed(!saveConversations(conversations));
+      },
       streaming ? 1000 : 0,
     );
     return () => window.clearTimeout(timer);
   }, [conversations, streaming]);
 
-  // Don't lose a pending save when the tab is closed mid-reply.
+  // Don't lose a pending save when the tab is closed mid-answer. Only write if a save is
+  // actually pending, so closing an idle tab never overwrites chats saved by another tab.
   useEffect(() => {
-    const flush = () => saveConversations(latestConversations.current);
+    const flush = () => {
+      if (!savePending.current) return;
+      savePending.current = false;
+      saveConversations(latestConversations.current);
+    };
     window.addEventListener("pagehide", flush);
     return () => window.removeEventListener("pagehide", flush);
   }, []);
+
+  // Check the Ask Data connection when the app opens.
+  useEffect(() => {
+    let cancelled = false;
+    loadConnection().then((c) => {
+      if (cancelled) return;
+      setStatus(c.status);
+      setStarters(c.starters);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const retryConnection = async () => {
+    setStatus(null);
+    const c = await loadConnection();
+    setStatus(c.status);
+    setStarters(c.starters);
+  };
 
   const active = conversations.find((c) => c.id === activeId) ?? null;
   const messages = active?.messages ?? NO_MESSAGES;
@@ -122,34 +149,22 @@ export default function App() {
 
   const send = async (text: string) => {
     const content = text.trim();
-    const files = uploads.attachments.map(({ loading: _loading, ...a }) => a);
-    if ((!content && !files.length) || streaming || uploads.loading) return;
+    if (!content || streaming) return;
 
-    const userMsg: ChatMessage = {
-      id: newId(),
-      role: "user",
-      content,
-      ...(files.length && { attachments: files }),
-    };
+    const userMsg: ChatMessage = { id: newId(), role: "user", content };
     const assistantMsg: ChatMessage = { id: newId(), role: "assistant", content: "" };
 
     let convId = activeId;
-    let history: ChatMessage[];
+    const askDataConversationId = activeId && active ? active.askDataConversationId : undefined;
     if (!convId || !active) {
       convId = newId();
-      history = [userMsg];
-      const label = content || files.map((f) => f.name).join(", ");
-      const title = label.length > 40 ? label.slice(0, 40) + "…" : label;
+      const title = content.length > 40 ? content.slice(0, 40) + "…" : content;
       setConversations((list) => [
         { id: convId!, title, messages: [userMsg, assistantMsg], updatedAt: Date.now() },
         ...list,
       ]);
       setActiveId(convId);
     } else {
-      // Skip failed replies and empty ones (Stop pressed before the first token):
-      // providers reject empty assistant messages in the history.
-      const usable = active.messages.filter((m) => !m.error && (m.role === "user" || m.content.trim()));
-      history = [...usable, userMsg];
       updateConversation(convId, (c) => ({
         ...c,
         messages: [...c.messages, userMsg, assistantMsg],
@@ -157,7 +172,6 @@ export default function App() {
       }));
     }
     setInput("");
-    uploads.clear();
     setStreaming(true);
     stickToBottom.current = true;
 
@@ -168,55 +182,63 @@ export default function App() {
           m.id === assistantMsg.id ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) } : m,
         ),
       }));
+    const setDetails = (patch: Partial<AskDataDetails>) =>
+      setAssistant((m) => ({ askData: { ...m.askData, ...patch } }));
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch("/api/askdata/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({
-          messages: toWireMessages(history),
-          provider: settings.provider,
-          model: settings.model,
-          apiKey: settings.apiKey,
-          systemPrompt: settings.systemPrompt,
-        }),
+        body: JSON.stringify({ question: content, conversationId: askDataConversationId ?? null }),
       });
-
-      if (!res.ok || !res.body) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Request failed (${res.status}).`);
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const event = JSON.parse(line);
-          if (event.type === "token") setAssistant((m) => ({ content: m.content + event.text }));
-          if (event.type === "error") throw new Error(event.message);
+      await readNdjson(res, (event) => {
+        switch (event.type) {
+          case "status":
+            setDetails({ status: String(event.text) });
+            break;
+          case "token":
+            setAssistant((m) => ({ content: m.content + String(event.text) }));
+            break;
+          case "sql":
+            setDetails({ sql: String(event.sql) });
+            break;
+          case "result":
+            setDetails({ result: event as unknown as AskDataResult });
+            break;
+          case "insights":
+            setDetails({ insights: event.items as string[] });
+            break;
+          case "followups":
+            setDetails({ followups: event.items as string[] });
+            break;
+          case "done":
+            if (typeof event.conversationId === "number") {
+              const id = event.conversationId;
+              updateConversation(convId!, (c) => ({ ...c, askDataConversationId: id }));
+            }
+            break;
+          case "error":
+            throw new Error(String(event.message));
         }
-      }
+      });
+      // An answer came back, so the server is signed in.
+      setStatus({ connected: true });
     } catch (err) {
       if (!controller.signal.aborted) {
         const message = err instanceof Error ? err.message : "Something went wrong.";
         setAssistant((m) => ({ content: m.content ? `${m.content}\n\n${message}` : message, error: true }));
       }
     } finally {
-      // Stopped before any text arrived: drop the empty reply instead of leaving a blank turn.
+      // Stopped before anything arrived: drop the empty answer. Also clear the progress text.
       updateConversation(convId!, (c) => ({
         ...c,
-        messages: c.messages.filter((m) => m.id !== assistantMsg.id || m.content || m.error),
+        messages: c.messages
+          .filter((m) => m.id !== assistantMsg.id || m.content || m.error || m.askData?.result)
+          .map((m) => (m.id === assistantMsg.id && m.askData ? { ...m, askData: { ...m.askData, status: undefined } } : m)),
       }));
       setStreaming(false);
       abortRef.current = null;
@@ -225,19 +247,6 @@ export default function App() {
 
   const stop = () => abortRef.current?.abort();
 
-  const updateSettings = (s: ChatSettings) => {
-    setSettings(s);
-    saveSettings(s);
-  };
-
-  const saveAndClose = (s: ChatSettings) => {
-    updateSettings(s);
-    setSettingsOpen(false);
-  };
-
-  const closeSettings = useCallback(() => setSettingsOpen(false), []);
-
-  const connected = !!settings.apiKey;
   const lastMsg = messages[messages.length - 1];
 
   return (
@@ -253,32 +262,11 @@ export default function App() {
         onNew={newChat}
         onDelete={deleteChat}
         onClose={() => setSidebarOpen(false)}
-        onOpenSettings={() => setSettingsOpen(true)}
-        connected={connected}
+        status={status}
+        onRetry={retryConnection}
       />
 
-      <main
-        className="relative flex min-w-0 flex-1 flex-col"
-        onDragEnter={(e) => {
-          if (!e.dataTransfer.types.includes("Files")) return;
-          dragDepth.current += 1;
-          setDragging(true);
-        }}
-        onDragLeave={() => {
-          dragDepth.current = Math.max(0, dragDepth.current - 1);
-          if (dragDepth.current === 0) setDragging(false);
-        }}
-        onDragOver={(e) => {
-          if (e.dataTransfer.types.includes("Files")) e.preventDefault();
-        }}
-        onDrop={(e) => {
-          if (!e.dataTransfer.files.length) return;
-          e.preventDefault();
-          dragDepth.current = 0;
-          setDragging(false);
-          uploads.addFiles(Array.from(e.dataTransfer.files));
-        }}
-      >
+      <main className="relative flex min-w-0 flex-1 flex-col">
         {/* Header */}
         <header className="flex h-14 shrink-0 items-center gap-1 px-3">
           {/* Open-sidebar / new-chat buttons slide in as the sidebar slides out. */}
@@ -303,11 +291,7 @@ export default function App() {
               <SquarePen size={20} />
             </button>
           </div>
-          <ModelPicker
-            settings={settings}
-            onSelect={(model) => updateSettings({ ...settings, model })}
-            onOpenSettings={() => setSettingsOpen(true)}
-          />
+          <span className="px-2 text-lg font-semibold">Ask Data</span>
           <div className="ml-auto">
             <ThemeToggle />
           </div>
@@ -324,37 +308,48 @@ export default function App() {
         >
           {messages.length === 0 ? (
             <div className="mx-auto flex h-full max-w-3xl flex-col items-center justify-center px-4 pb-10">
-              <h1 className="mb-2 text-3xl font-semibold">What can I help with?</h1>
-              <p className="mb-8 text-sm text-[var(--muted)]">
-                Chat AI · {PROVIDERS[settings.provider].label}
-              </p>
-              {!connected && (
-                <button
-                  onClick={() => setSettingsOpen(true)}
-                  className="mb-8 flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm hover:bg-amber-500/20"
+              <h1 className="mb-2 text-3xl font-semibold">What do you want to know?</h1>
+              <p className="mb-8 text-sm text-[var(--muted)]">Answers from your live TWise data</p>
+              {status && !status.connected && (
+                <div
+                  role="alert"
+                  className="mb-8 flex max-w-xl items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm"
                 >
-                  <KeyRound size={16} /> Connect your API key in Settings to start chatting
-                </button>
+                  <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-500" />
+                  <span className="flex-1">{status.error ?? "Couldn't connect to Ask Data."}</span>
+                  <button
+                    onClick={retryConnection}
+                    className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-0.5 font-medium hover:bg-amber-500/20"
+                  >
+                    <RotateCw size={13} /> Try again
+                  </button>
+                </div>
+              )}
+              {starters.length > 0 && (
+                <div className="grid w-full max-w-2xl gap-2 sm:grid-cols-2">
+                  {starters.map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => send(q)}
+                      className="rounded-2xl border border-[var(--border)] px-4 py-3 text-left text-sm hover:bg-[var(--hover)]"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
           ) : (
             <div className="mx-auto max-w-3xl px-4 py-6">
               {messages.map((m) =>
                 m.role === "user" ? (
-                  <div key={m.id} className="mb-6 flex flex-col items-end gap-2">
-                    {m.attachments && m.attachments.length > 0 && (
-                      <div className="flex max-w-[85%] flex-wrap justify-end gap-2">
-                        {m.attachments.map((a) => (
-                          <AttachmentChip key={a.id} attachment={a} />
-                        ))}
-                      </div>
-                    )}
-                    {m.content && (
+                  m.content && (
+                    <div key={m.id} className="mb-6 flex justify-end">
                       <div className="max-w-[85%] whitespace-pre-wrap rounded-3xl bg-[var(--user-bubble)] px-5 py-2.5">
                         {m.content}
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )
                 ) : (
                   <div key={m.id} className="mb-8 flex gap-4">
                     <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--border)] text-[10px] font-bold">
@@ -364,8 +359,18 @@ export default function App() {
                       {m.content ? (
                         <Markdown content={m.content} />
                       ) : (
-                        streaming && m.id === lastMsg?.id && <span className="typing-dot" aria-label="Thinking" />
+                        streaming &&
+                        m.id === lastMsg?.id &&
+                        (m.askData?.status ? (
+                          <p className="flex items-center gap-3 pt-1 text-sm text-[var(--muted)]">
+                            <span className="typing-dot !mt-0" aria-hidden />
+                            {m.askData.status}
+                          </p>
+                        ) : (
+                          <span className="typing-dot" aria-label="Thinking" />
+                        ))
                       )}
+                      {m.askData && <AskDataPanel details={m.askData} busy={streaming} onAsk={send} />}
                     </div>
                   </div>
                 ),
@@ -389,42 +394,9 @@ export default function App() {
             onStop={stop}
             streaming={streaming}
             textareaRef={textareaRef}
-            attachments={uploads.attachments}
-            attachmentErrors={uploads.errors}
-            attachmentsLoading={uploads.loading}
-            attachmentsFull={uploads.full}
-            onAddFiles={uploads.addFiles}
-            onRemoveAttachment={uploads.remove}
           />
         </div>
-
-        {/* Drag-and-drop overlay */}
-        <div
-          aria-hidden
-          className={`pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-[var(--bg)]/80 backdrop-blur-sm transition-opacity duration-200 ${
-            dragging ? "opacity-100" : "opacity-0"
-          }`}
-        >
-          <div
-            className={`flex flex-col items-center gap-3 rounded-3xl border-2 border-dashed border-[var(--accent)] px-12 py-10 text-center transition-transform duration-200 ${
-              dragging ? "scale-100" : "scale-95"
-            }`}
-          >
-            <Upload size={32} className="text-[var(--accent)]" />
-            <div className="text-lg font-semibold">Drop files to attach</div>
-            <div className="text-sm text-[var(--muted)]">
-              Images up to {formatBytes(UPLOAD_LIMITS.maxImageBytes)}, PDFs up to{" "}
-              {formatBytes(UPLOAD_LIMITS.maxPdfBytes)}, text files up to {formatBytes(UPLOAD_LIMITS.maxTextBytes)}
-              <br />
-              Max {UPLOAD_LIMITS.maxFiles} files per message
-            </div>
-          </div>
-        </div>
       </main>
-
-      {settingsOpen && (
-        <SettingsModal settings={settings} onClose={closeSettings} onSave={saveAndClose} />
-      )}
     </div>
   );
 }

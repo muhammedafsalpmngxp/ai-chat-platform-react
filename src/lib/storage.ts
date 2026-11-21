@@ -1,12 +1,12 @@
-import type { Attachment } from "./attachments";
-import { DEFAULT_SETTINGS, type ChatSettings } from "./providers";
+import type { AskDataDetails } from "./askdata";
 
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  attachments?: Attachment[];
   error?: boolean;
+  /** Table, SQL, insights and follow-ups of an Ask Data answer. */
+  askData?: AskDataDetails;
 }
 
 export interface Conversation {
@@ -14,10 +14,13 @@ export interface Conversation {
   title: string;
   messages: ChatMessage[];
   updatedAt: number;
+  /** TWise Ask Data conversation, so follow-up questions keep their context. */
+  askDataConversationId?: number;
 }
 
-const SETTINGS_KEY = "chat-ai:settings";
 const CONVERSATIONS_KEY = "chat-ai:conversations";
+/** Old settings (API keys, Ask Data tokens). No longer used, so they're deleted. */
+const OLD_SETTINGS_KEY = "chat-ai:settings";
 
 function read<T>(key: string, fallback: T): T {
   try {
@@ -38,24 +41,17 @@ function write(key: string, value: unknown): boolean {
   }
 }
 
-export const loadSettings = (): ChatSettings => ({ ...DEFAULT_SETTINGS, ...read(SETTINGS_KEY, {}) });
-export const saveSettings = (s: ChatSettings) => write(SETTINGS_KEY, s);
+export function loadConversations(): Conversation[] {
+  try {
+    window.localStorage.removeItem(OLD_SETTINGS_KEY);
+  } catch {
+    // Storage blocked.
+  }
+  return read<Conversation[]>(CONVERSATIONS_KEY, []);
+}
 
-export const loadConversations = (): Conversation[] => read<Conversation[]>(CONVERSATIONS_KEY, []);
-/**
- * File contents are too big for localStorage, so only names, sizes and image thumbnails are saved.
- * Returns false if the chats couldn't be saved.
- */
-export const saveConversations = (list: Conversation[]): boolean =>
-  write(
-    CONVERSATIONS_KEY,
-    list.map((c) => ({
-      ...c,
-      messages: c.messages.map((m) =>
-        m.attachments ? { ...m, attachments: m.attachments.map(({ data: _data, ...rest }) => rest) } : m,
-      ),
-    })),
-  );
+/** Returns false if the chats couldn't be saved. */
+export const saveConversations = (list: Conversation[]): boolean => write(CONVERSATIONS_KEY, list);
 
 export const newId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto

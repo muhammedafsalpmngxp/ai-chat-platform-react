@@ -1,27 +1,29 @@
-# Chat AI
+# Ask Data
 
-A ChatGPT-style chat app: **React (Vite)** front end, with a **LangGraph** agent running in a small **Express** server.
+A ChatGPT-style chat for asking questions about your **TWise** data: a **React (Vite)** front end and a small **Express** server that connects to the TWise Ask Data service.
 
-- Streaming replies with Markdown, code blocks with a copy button, and a Stop button
+- Answers stream in with progress steps, followed by key insights, the result table, the SQL that ran, and follow-up questions you can click
+- Follow-up questions in the same chat keep their context
+- Suggested questions on the start screen
 - Conversation history in the sidebar, grouped by date and saved in the browser
-- **Settings**: pick a provider (Anthropic Claude or OpenAI), connect your API key, test it, pick a model, and edit the system prompt
 - Light and dark themes that follow the OS, plus a mobile layout
 
 ## Run it
 
 ```bash
 npm install
+cp .env.example .env   # then fill in TWISE_EMAIL and TWISE_PASSWORD
 npm run dev
 ```
 
-Open http://localhost:5173, click **Settings** (bottom left), paste your API key, press **Test**, then **Save**.
+Open http://localhost:5173. The dot at the bottom of the sidebar is green when the server is signed in to Ask Data.
 
 `npm run dev` starts both parts:
 
 | Part | Port | Code |
 |---|---|---|
 | React UI (Vite) | 5173 | `src/` |
-| LangGraph API (Express) | 8787 | `server/` |
+| API (Express) | 8787 | `server/` |
 
 Vite forwards `/api/*` to the Express server.
 
@@ -32,43 +34,26 @@ npm run build   # type-checks, then builds the UI into dist/
 npm start       # Express serves dist/ and /api on http://localhost:8787
 ```
 
+## Always signed in
+
+The server signs in to TWise with the account in `.env` (`TWISE_EMAIL`, `TWISE_PASSWORD`) when it starts. It keeps the session in memory, renews it with the refresh token when it expires, and signs in again if that fails. The browser never sees the password or the tokens, so there's no sign-in screen.
+
+- Changes to `.env` apply on the next sign-in, without a restart. Click the status row in the sidebar (or **Try again** on the start screen) to retry.
+- After a failed sign-in, the same account isn't retried for 30 seconds, so a wrong password can't lock the account.
+- Everyone who can open the app asks questions as that one TWise account. Don't expose it publicly without adding auth.
+
 ## How it works
 
-```
-React UI ──POST /api/chat──▶ Express ──▶ LangGraph StateGraph (START → chat → END)
-   ▲                                          │
-   └──────── NDJSON token stream ◀────────────┘   ChatAnthropic / ChatOpenAI
-```
+`server/askdata.ts` forwards to the TWise APIs, so the browser never calls them directly (no CORS setup needed):
 
-- `server/graph.ts` holds the LangGraph graph. The `chat` node builds the model from the request's settings (provider, key, model, system prompt), passed in through `config.configurable`. To add tools, retrieval, or routing, add nodes and edges here.
-- `server/index.ts` has two routes:
-  - `POST /api/chat` streams the graph's output (`streamMode: "messages"`) as NDJSON.
-  - `POST /api/models` lists the models your key can use. The Settings **Test** button calls it, and it costs no tokens.
-- `src/App.tsx` is the chat screen. `src/components/SettingsModal.tsx` is the settings dialog.
-
-## File uploads
-
-Use the paperclip button, drag files onto the chat, or paste images into the message box.
-
-| Limit | Value |
+| This app | TWise |
 |---|---|
-| Files per message | 5 |
-| Image (PNG, JPEG, WebP, GIF) | 5 MB each |
-| PDF | 10 MB each |
-| Text or code file (.txt, .md, .csv, .json, .py, .ts, …) | 1 MB each |
-| All files in one message | 20 MB |
-| Attachments resent from chat history per request | 25 MB (older files are dropped first) |
+| (server start, session renewal) | `POST {TWISE_AUTH_URL}/auth/login`, `POST {TWISE_AUTH_URL}/auth/refresh-token` |
+| `GET /api/askdata/status` | Signs in if needed; returns `{connected, error?}` |
+| `GET /api/askdata/starters` | `GET {TWISE_API_URL}/ai/askdata/starters` |
+| `POST /api/askdata/ask` | `POST {TWISE_API_URL}/ai/ask` (Server-Sent Events, re-streamed as NDJSON) |
 
-The limits live in `src/lib/attachment-limits.ts`. The browser checks them first so it can show a friendly message, and the server checks them again.
-
-Images and PDFs go to the model as LangChain base64 data blocks, which both ChatAnthropic and ChatOpenAI support. Text files are sent as text. File contents stay in memory only, and only names, sizes and image thumbnails are saved with the chat. After a page reload, earlier files show as names and are no longer sent to the model.
-
-## API keys
-
-- The key you enter in Settings is stored in **this browser's localStorage** and sent with each request to your own server, which passes it to the provider. It is never saved on the server.
-- Optional: put fallback keys in a `.env` file (copy `.env.example`). The server uses them when no key is entered in Settings, which is useful for a shared deployment. Don't expose that kind of deployment publicly without adding auth.
-
-## Models
-
-- Anthropic: `claude-opus-5-5` (default), `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-2`. On Opus 5.5, Sonnet 5.5, and Fable 5.2, server-side refusal fallback (`fallbacks: "default"`) is turned on.
-- OpenAI: press **Test** to load the models your key can use, or type any model ID.
+- The hosts default to the QA environment. Set `TWISE_AUTH_URL` and `TWISE_API_URL` in `.env` to point elsewhere.
+- Result tables are capped at 200 rows in the browser (the row count shows the full total).
+- Charts from Ask Data aren't drawn; the data table and insights are shown instead.
+- `src/App.tsx` is the chat screen; `src/components/AskDataDetails.tsx` shows the insights, table, SQL and follow-ups.
